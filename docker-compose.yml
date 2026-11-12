@@ -1,5 +1,4 @@
 services:
-
   backend:
     build: .
     container_name: healops-backend
@@ -17,14 +16,37 @@ services:
       start_period: 5s
     restart: unless-stopped
 
+  db:
+    image: postgres:17
+    container_name: healops-db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - healops_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    restart: unless-stopped
+
   healing-engine:
     build: .
     container_name: healops-engine
     command: python -u healing_engine.py
     environment:
-      - PYTHONUNBUFFERED=1
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
-      - backend
+      backend:
+        condition: service_started
+      db:
+        condition: service_healthy
     restart: unless-stopped
+
+volumes:
+  healops_data:

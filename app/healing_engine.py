@@ -1,6 +1,7 @@
 import docker
 import time
-from datetime import datetime
+
+from incident_logger import initialize_database, record_incident
 
 client = docker.from_env()
 
@@ -14,11 +15,10 @@ restart_attempts = 0
 
 
 def log(message):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}", flush=True)
+    print(f"[HEALOPS] {message}", flush=True)
 
 
-def recover(container):
+def recover(container, failure_type):
     global last_restart, restart_attempts
 
     if time.time() - last_restart < COOLDOWN:
@@ -26,14 +26,19 @@ def recover(container):
         return
 
     if restart_attempts >= MAX_RETRIES:
-        log("CRITICAL: Maximum recovery attempts reached!")
+        log("CRITICAL: Maximum recovery attempts reached.")
         return
 
     restart_attempts += 1
+    attempts_for_incident = restart_attempts
     last_restart = time.time()
 
-    log(f"Recovery attempt {restart_attempts}/{MAX_RETRIES}")
-    log("Initiating recovery...")
+    start_time = time.monotonic()
+    recovery_status = "failed"
+    recovery_action = "Container restart"
+
+    log(f"Recovery attempt {attempts_for_incident}/{MAX_RETRIES}")
+    log("Initiating automatic recovery...")
 
     try:
         container.restart(timeout=5)
@@ -48,17 +53,37 @@ def recover(container):
             ).get("Status", "unknown")
 
             if state == "running" and health == "healthy":
+                recovery_status = "recovered"
                 log("SUCCESS: Container recovered!")
                 restart_attempts = 0
-                return
+                break
 
-        log("WARNING: Recovery initiated but health not verified.")
+        if recovery_status != "recovered":
+            log("WARNING: Recovery initiated but health not verified.")
 
     except Exception as error:
         log(f"RECOVERY FAILED: {error}")
 
+    duration = round(time.monotonic() - start_time, 2)
+
+    try:
+        record_incident(
+            container_name=TARGET_CONTAINER,
+            failure_type=failure_type,
+            recovery_action=recovery_action,
+            duration=duration,
+            status=recovery_status,
+            attempts=attempts_for_incident
+        )
+        log("Incident saved to PostgreSQL.")
+
+    except Exception as error:
+        log(f"Incident logging failed: {error}")
+
 
 def monitor():
+    initialize_database()
+
     log("===================================")
     log("       HEALOPS ENGINE STARTED")
     log("===================================")
@@ -75,9 +100,13 @@ def monitor():
 
             log(f"Container: {state} | Health: {health}")
 
-            if state != "running" or health == "unhealthy":
-                log("FAILURE DETECTED!")
-                recover(container)
+            if state != "running":
+                log("FAILURE DETECTED: Container stopped!")
+                recover(container, "container_stopped")
+
+            elif health == "unhealthy":
+                log("FAILURE DETECTED: Application unhealthy!")
+                recover(container, "application_unhealthy")
 
         except docker.errors.NotFound:
             log("CRITICAL: Target container not found.")
