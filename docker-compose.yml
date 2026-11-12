@@ -1,0 +1,30 @@
+services:
+
+  backend:
+    build: .
+    container_name: healops-backend
+    ports:
+      - "5005:5000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://localhost:5000/health', timeout=2)"
+      interval: 5s
+      timeout: 3s
+      retries: 2
+      start_period: 5s
+    restart: unless-stopped
+
+  healing-engine:
+    build: .
+    container_name: healops-engine
+    command: python -u healing_engine.py
+    environment:
+      - PYTHONUNBUFFERED=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      - backend
+    restart: unless-stopped
